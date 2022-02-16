@@ -58,7 +58,7 @@ START WITH 1
 CACHE 1000
 NO CYCLE;
 
-
+--SCD2
 /* Создание таблицы фактов со следующими ограничениями:
  * Данные не должны принимать значения null
  * Тип оперции принимает значения: 'Пополнение','Снятие','Оплата'
@@ -95,8 +95,8 @@ PARTITION BY range (trans_date)
  * В качестве ключа распределения выбрана колонка terminal_key, которая принимает уникальные значения
  */
 
-DROP TABLE IF EXISTS chirkova.dim_terminals;
-create table chirkova.dim_terminals(
+DROP TABLE IF EXISTS chirkova.dim_terminals_hist;
+create table chirkova.dim_terminals_hist(
 	terminal_key        integer not null,
 	terminal_id 		varchar(8) not null,
 	terminal_type 		varchar(3) not null,
@@ -122,8 +122,8 @@ DISTRIBUTED BY (card_dir_key);
  * В качестве ключа распределения выбрана колонка card_key, которая принимает уникальные значения
  */
 
-DROP TABLE IF EXISTS chirkova.DIM_cards;
-create table chirkova.DIM_cards(
+DROP TABLE IF EXISTS chirkova.DIM_cards_hist;
+create table chirkova.DIM_cards_hist(
 	card_key            integer not null,
 	card_dir_key		integer not null,
 	account_key 		integer not null,
@@ -138,8 +138,8 @@ DISTRIBUTED BY (card_key);
  */
  
 execute
-'DROP TABLE IF EXISTS chirkova.DIM_accounts;
-create table chirkova.DIM_accounts(
+'DROP TABLE IF EXISTS chirkova.DIM_accounts_hist;
+create table chirkova.DIM_accounts_hist(
 	account_key         integer not null,
 	account_num 		varchar(20) not null,
 	valid_to 			date not null,
@@ -164,8 +164,8 @@ PARTITION BY range (valid_to)
 
  
 execute
-'DROP TABLE IF EXISTS chirkova.DIM_clients;
-create table chirkova.DIM_clients(
+'DROP TABLE IF EXISTS chirkova.DIM_clients_hist;
+create table chirkova.DIM_clients_hist(
 	client_key          integer not null,
 	client_id 			varchar(7) not null,
 	last_name 			varchar(30) not null,
@@ -179,6 +179,118 @@ create table chirkova.DIM_clients(
 	end_dt              timestamp  DEFAULT null
 )
 DISTRIBUTED BY (client_key)
+
+PARTITION BY range (passport_valid_to)
+(START (date '''|| min_val_pas||''') INCLUSIVE
+    END (date '''|| ed_dt||''') exclusive,
+ START (date '''|| ed_dt||''') INCLUSIVE
+    END (date '''|| max_val_pas ||''') INCLUSIVE,
+ DEFAULT PARTITION other_date_pas);';
+
+
+/* Создание таблицы cо следующими методанными по таблицам:
+ * Уникальный идентификационный номер таблицы
+ * Имя схемы
+ * Имя таблицы
+ * Имя пользователя, который совершил какое-либо действие над таблицей
+ * Соотношение распределения данных между сегментами
+ * Дата и время предыдущей очистки
+ * Размер таблицы
+ * Общее количество строк
+ * Последняя операция над таблицей
+ * Тип последней операции над таблицей
+ * Дата последней операции над таблицей
+ */
+
+--SCD1
+
+EXECUTE	
+'DROP TABLE IF EXISTS chirkova.FACT_TRANSACTIONS_FOR_SCD1;
+create table chirkova.FACT_TRANSACTIONS_FOR_SCD1(
+	trans_id 			varchar(9) not null,
+	trans_date 			timestamp not null,
+	card_num 			varchar not null,
+	oper_type 			varchar(20) check (oper_type in (''Пополнение'',''Снятие'',''Оплата'')),
+	amt 				decimal check(amt>0),
+	oper_result 		varchar(20) check (oper_result in (''Успешно'',''Отказ'')),
+	terminal    		varchar not null
+)
+with(
+	APPENDONLY=TRUE,
+    COMPRESSTYPE=QUICKLZ,
+    ORIENTATION=ROW
+)
+
+DISTRIBUTED BY (trans_id)
+PARTITION BY range (trans_date)
+(START (date '''|| st_dt||''') INCLUSIVE
+    END (date '''|| ed_dt||''') EXCLUSIVE
+    EVERY (INTERVAL ''1 day''));';
+
+
+
+
+
+DROP TABLE IF EXISTS chirkova.dim_terminals;
+create table chirkova.dim_terminals(
+	terminal_id 		varchar(8) not null,
+	terminal_type 		varchar(3) not null,
+	terminal_city 		varchar(30) not null,
+	terminal_address 	varchar(60) not null,
+	create_dt 		    timestamp  DEFAULT now(),
+	update_dt           timestamp  DEFAULT null
+)
+DISTRIBUTED BY (terminal_id);
+
+
+
+
+DROP TABLE IF EXISTS chirkova.DIM_cards;
+create table chirkova.DIM_cards(
+	card_num		    varchar not null,
+	account_num 		varchar not null,
+	create_dt 		    timestamp  DEFAULT now(),
+	update_dt           timestamp  DEFAULT null
+)
+DISTRIBUTED BY (card_num);
+
+
+ 
+execute
+'DROP TABLE IF EXISTS chirkova.DIM_accounts;
+create table chirkova.DIM_accounts(
+	account_num 		varchar(20) not null,
+	valid_to 			date not null,
+	client_id		    varchar not null,
+	create_dt 		    timestamp  DEFAULT now(),
+	update_dt           timestamp  DEFAULT null
+)
+DISTRIBUTED BY (account_num)
+
+PARTITION BY range (valid_to)
+(START (date '''|| min_val_ac||''') INCLUSIVE
+    END (date '''|| ed_dt||''') exclusive,
+ START (date '''|| ed_dt||''') INCLUSIVE
+    END (date '''|| max_val_ac ||''') INCLUSIVE,
+ DEFAULT PARTITION other_date);';
+
+
+ 
+execute
+'DROP TABLE IF EXISTS chirkova.DIM_clients;
+create table chirkova.DIM_clients(
+	client_id 			varchar(7) not null,
+	last_name 			varchar(30) not null,
+	first_name 			varchar(30) not null,
+	patronymic 			varchar(30) not null,
+	date_of_birth 		date not null,
+	passport_num 		varchar(10) not null,
+	passport_valid_to 	date not null,
+	phone 				varchar(15) check ( phone like ''+7%''),
+	create_dt 		    timestamp  DEFAULT now(),
+	update_dt           timestamp  DEFAULT null
+)
+DISTRIBUTED BY (client_id)
 
 PARTITION BY range (passport_valid_to)
 (START (date '''|| min_val_pas||''') INCLUSIVE
