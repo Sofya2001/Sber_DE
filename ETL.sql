@@ -1,8 +1,3 @@
-begin;
-select chirkova.load_data([ip address],[port],[file_name]);
-select chirkova.load_data_in_norm_structure();
-end;
-
 
 /*Создание внешней таблицы, которая обеспечивает доступ к данным в источниках за пределами Greenplum, для загрузки данных используем утилиту gpfdist.
  * Извлечение данных и их загрузка во внешнюю таблицу:
@@ -84,7 +79,7 @@ declare
 							 group by terminal, terminal_type, terminal_city, terminal_address)
 							 except 
 							(select   terminal_id, terminal_type, terminal_city, terminal_address
-							 from      chirkova.DIM_terminals
+							 from      chirkova.DIM_terminals_hist
 							 group by  terminal_id, terminal_type, terminal_city, terminal_address);
 	crs_card_num        varchar;
 	crs_dic CURSOR FOR    (select card_num 
@@ -97,25 +92,28 @@ declare
 													
 	crs_card			integer;
 	crs_account  		integer;
+	cur_card_c            varchar;
+	cur_account         varchar;
 	crs_cards CURSOR FOR    (select card_dir_key, account_key	 
 							 from STG_data inner join chirkova.dim_cards_directory using(card_num) inner join 
-							 	(select account_key,account_num from chirkova.DIM_accounts where end_dt is null) a using(account_num)
+							 	(select account_key,account_num from chirkova.DIM_accounts_hist where end_dt is null) a using(account_num)
 							 group by card_dir_key, account_key)	
 							 except
 							 (select card_dir_key, account_key	 
-							 from chirkova.DIM_cards
+							 from chirkova.DIM_cards_hist
 							 group by card_dir_key, account_key)
 							  ;
 							
 	crs_account_num		varchar;
 	crs_valid_to_a  	date;
 	crs_client_key		integer;
+	cl_id               varchar;
 	crs_accounts CURSOR FOR  (select  account_num, valid_to, client_key	
-							  from STG_data inner join (select client_key,client_id from chirkova.DIM_clients where end_dt is null) a on client=client_id
+							  from STG_data inner join (select client_key,client_id from chirkova.DIM_clients_hist where end_dt is null) a on client=client_id
 							  group by account_num, valid_to, client_key)			
 							  except 	
 							  (select account_num, valid_to, client_key	
-							  from chirkova.DIM_accounts
+							  from chirkova.DIM_accounts_hist
 							  group by account_num, valid_to, client_key);
 			
 	crs_client      	varchar;
@@ -131,7 +129,7 @@ declare
 							group by client, last_name, first_name, patronymic, date_of_birth, passport_num, passport_valid_to, phone)
 							except 
 						   (select  client_id, last_name, first_name, patronymic, date_of_birth, passport_num, passport_valid_to, phone
-							from     chirkova.DIM_clients		
+							from     chirkova.DIM_clients_hist		
 							group by client_id, last_name, first_name, patronymic, date_of_birth, passport_num, passport_valid_to, phone);
 						
 	tr_cr_num           varchar;
@@ -179,25 +177,30 @@ begin
 		 perform chirkova.create_table();
 	end if;
 
-/* Загрузка данных из временной таблицы в таблицу с даннымм о терминалах, при попытке вставки идентичной записи, запись не вставляется, 
+/* Загрузка данных из временной таблицы в таблицу(SCD2) с даннымм о терминалах, при попытке вставки идентичной записи, запись не вставляется, 
  * при попытке вставки строки с идентичным идентификатором, при этом какие-либо данные данной строки изменены,запись вставляется в таблицу, с присваением
  * суррогатного ключа, в старую версию строки в дополнительный столбец с датой конца версии простовляется дата начала новой версии строки.
+ * Загрузка данных из временной таблицы в таблицу(SCD1) с даннымм о терминалах, при попытке вставки идентичной записи, запись не вставляется, 
+ * при попытке вставки строки с идентичным идентификатором, запись обновляется
  */
 	OPEN crs_terminal;
 		loop
 			FETCH crs_terminal INTO crs_id, crs_type, crs_city,crs_address;
 			IF NOT FOUND THEN EXIT;END IF;
-			select count(1) into count_row from chirkova.DIM_terminals where 
+			select count(1) into count_row from chirkova.DIM_terminals_hist where 
 				terminal_id=crs_id and end_dt is null;
 			if count_row>0 then 
-				insert into chirkova.DIM_terminals values(nextval('chirkova.terminals_seq'),crs_id, crs_type, crs_city,crs_address);
-				update chirkova.DIM_terminals set end_dt=(select start_dt from chirkova.DIM_terminals 
+				insert into chirkova.DIM_terminals_hist values(nextval('chirkova.terminals_seq'),crs_id, crs_type, crs_city,crs_address);
+				update chirkova.DIM_terminals_hist set end_dt=(select start_dt from chirkova.DIM_terminals_hist
 					where terminal_id=crs_id and terminal_type=crs_type and terminal_city=crs_city and terminal_address=crs_address) 
 					where terminal_id=crs_id and (terminal_type!=crs_type or terminal_city!=crs_city or terminal_address!=crs_address) and 
 						end_dt is null;
+				update chirkova.DIM_terminals set terminal_type=crs_type,terminal_city=crs_city, terminal_address=crs_address, update_dt=(select now())
+					where terminal_id=crs_id and (terminal_type!=crs_type or terminal_city!=crs_city or terminal_address!=crs_address);
 				quantity_up:=quantity_up+1;
 	        else
-				insert into chirkova.DIM_terminals values(nextval('chirkova.terminals_seq'),crs_id, crs_type, crs_city,crs_address);
+				insert into chirkova.DIM_terminals_hist values(nextval('chirkova.terminals_seq'),crs_id, crs_type, crs_city,crs_address);
+				insert into chirkova.DIM_terminals values(crs_id, crs_type, crs_city,crs_address);
 				quantity_in:=quantity_in+1;
 			end if;
 		END LOOP;
@@ -225,25 +228,30 @@ begin
 
 
 
-/* Загрузка данных из временной таблицы в таблицу с данными о клиентах, при попытке вставки идентичной записи, запись не вставляется, 
+/* Загрузка данных из временной таблицы в таблицу(SCD2) с данными о клиентах, при попытке вставки идентичной записи, запись не вставляется, 
  * при попытке вставки строки с идентичным идентификатором, при этом какие-либо данные данной строки изменены,запись вставляется в таблицу,с присваением
  * суррогатного ключа, в старую версию строки в дополнительный столбец с датой конца версии простовляется дата начала новой версии строки.
+ * Загрузка данных из временной таблицы в таблицу(SCD1) с даннымм о клиентах, при попытке вставки идентичной записи, запись не вставляется, 
+ * при попытке вставки строки с идентичным идентификатором, запись обновляется
  */	
 	OPEN crs_clients;
 		loop
 			FETCH crs_clients INTO crs_client, crs_last_name , crs_first_name, crs_patronymic, crs_birth , crs_passport_num, crs_valid_to, crs_phone;
 			IF NOT FOUND THEN EXIT;END IF;
-			select count(client_id) into count_row from chirkova.DIM_clients where 
+			select count(1) into count_row from chirkova.DIM_clients_hist where 
 					crs_client=client_id and end_dt is null;
 			if count_row>0 then 
-				insert into chirkova.DIM_clients values(nextval('chirkova.dim_clients_seq'),crs_client, crs_last_name , crs_first_name, crs_patronymic, crs_birth , crs_passport_num, crs_valid_to, crs_phone);
-				update chirkova.DIM_clients set end_dt=(select start_dt from chirkova.DIM_clients
+				insert into chirkova.DIM_clients_hist values(nextval('chirkova.dim_clients_seq'),crs_client, crs_last_name , crs_first_name, crs_patronymic, crs_birth , crs_passport_num, crs_valid_to, crs_phone);
+				update chirkova.DIM_clients_hist set end_dt=(select start_dt from chirkova.DIM_clients_hist
 					where crs_client=client_id and  crs_last_name=last_name and crs_first_name=first_name and crs_patronymic=patronymic and crs_passport_num=passport_num and crs_valid_to=passport_valid_to and crs_phone=phone) 
 					where crs_client=client_id and (crs_last_name!=last_name or crs_first_name!=first_name or  crs_patronymic!=patronymic or crs_passport_num!=passport_num or crs_valid_to!=passport_valid_to or crs_phone!=phone)
 						and end_dt is null;
+				update chirkova.DIM_clients set last_name=crs_last_name, first_name=crs_first_name, patronymic=crs_patronymic,passport_num=crs_passport_num, passport_valid_to=crs_valid_to, phone=crs_phone, update_dt=(select now())
+					where crs_client=client_id and (crs_last_name!=last_name or crs_first_name!=first_name or  crs_patronymic!=patronymic or crs_passport_num!=passport_num or crs_valid_to!=passport_valid_to or crs_phone!=phone);
 				quantity_up:=quantity_up+1;
 			else
-				insert into chirkova.DIM_clients values(nextval('chirkova.dim_clients_seq'),crs_client, crs_last_name , crs_first_name, crs_patronymic, crs_birth , crs_passport_num, crs_valid_to, crs_phone);
+				insert into chirkova.DIM_clients_hist values(nextval('chirkova.dim_clients_seq'),crs_client, crs_last_name , crs_first_name, crs_patronymic, crs_birth , crs_passport_num, crs_valid_to, crs_phone);
+				insert into chirkova.DIM_clients values(crs_client, crs_last_name , crs_first_name, crs_patronymic, crs_birth , crs_passport_num, crs_valid_to, crs_phone);
 				quantity_in=quantity_in+1;
 			end if;
 		END LOOP;
@@ -252,24 +260,30 @@ begin
 	quantity_up:=0;
 	quantity_in:=0;
 
-/* Загрузка данных из временной таблицы, к записям которым были присоеденены суррогатные ключи клиентов из таблицы с клиентами, при попытке вставки записи, где ключ клиента или дата окончания договора различны,
+/* Загрузка данных из временной таблицы в SCD2, к записям которым были присоеденены суррогатные ключи клиентов из таблицы с клиентами, при попытке вставки записи, где ключ клиента или дата окончания договора различны,
  * а номера счетов идентичны, то запись с новыми данными вставляется, в старую версию строки в дополнительный столбец с датой конца версии проставляется дата начала новой версии записи.
+ * Загрузка данных из временной таблицы в таблицу(SCD1) с даннымм о счетах, при попытке вставки идентичной записи, запись не вставляется, 
+ * при попытке вставки строки с идентичным идентификатором, запись обновляется
  */	
 
 	OPEN crs_accounts;
 		loop
 			FETCH crs_accounts INTO crs_account_num, crs_valid_to_a, crs_client_key;
 			IF NOT FOUND THEN EXIT;END IF;
-			select count(1) into count_row from chirkova.DIM_accounts where 
+			select client into cl_id from stg_data where account_num=crs_account_num;
+			select count(1) into count_row from chirkova.DIM_accounts_hist where 
 				crs_account_num=account_num and end_dt is null ;
 			if count_row>0 then 
-				insert into chirkova.DIM_accounts values(nextval('chirkova.dim_accounts_seq'),crs_account_num, crs_valid_to_a, crs_client_key);
-				update chirkova.DIM_accounts set end_dt=(select start_dt from chirkova.DIM_accounts
+				insert into chirkova.DIM_accounts_hist values(nextval('chirkova.dim_accounts_seq'),crs_account_num, crs_valid_to_a, crs_client_key);
+				update chirkova.DIM_accounts_hist set end_dt=(select start_dt from chirkova.DIM_accounts_hist
 					where crs_account_num=account_num and crs_valid_to_a=valid_to and crs_client_key=client_key) 
 					where crs_account_num=account_num and (crs_valid_to_a!=valid_to or crs_client_key!=client_key) and end_dt is null;
+				update chirkova.DIM_accounts set  valid_to=crs_valid_to_a , client_id=cl_id
+					where crs_account_num=account_num and (crs_valid_to_a!=valid_to or client_id!=cl_id) ;
 				quantity_up=quantity_up+1;
 			else
-				insert into chirkova.DIM_accounts values(nextval('chirkova.dim_accounts_seq'),crs_account_num, crs_valid_to_a, crs_client_key);
+				insert into chirkova.DIM_accounts_hist values(nextval('chirkova.dim_accounts_seq'),crs_account_num, crs_valid_to_a, crs_client_key);
+			 	insert into chirkova.DIM_accounts values(crs_account_num, crs_valid_to_a, cl_id);
 				quantity_in=quantity_in+1;
 			end if;
 		END LOOP;
@@ -278,25 +292,33 @@ begin
 	quantity_up:=0;
 	quantity_in:=0;
 
-/* Загрузка данных из временной таблицы, к записям которым были присоеденены суррогатные ключи счетов из таблицы со счетами и номерами карт из справочника, при попытке вставки записи, где ключ карты идентичен,
+/* Загрузка данных из временной таблицы в SCD2, к записям которым были присоеденены суррогатные ключи счетов из таблицы со счетами и номерами карт из справочника, при попытке вставки записи, где ключ карты идентичен,
  *  то запись с новыми данными вставляется, в старую версию строки в дополнительный столбец с датой конца версии проставляется дата начала новой версии записи.
- */	
+ *Загрузка данных из временной таблицы в таблицу(SCD1) с даннымм о картах, при попытке вставки идентичной записи, запись не вставляется, 
+ * при попытке вставки строки с идентичным идентификатором, запись обновляется
+  */	
+
 
 
 	OPEN crs_cards;
 		loop
 			FETCH crs_cards INTO crs_card, crs_account;
 			IF NOT FOUND THEN EXIT;END IF;
-			select count(1) into count_row from chirkova.DIM_cards where 
+			select card_num  into cur_card_c from chirkova.dim_cards_directory where card_dir_key=crs_card;
+			select account_num  into cur_account from chirkova.DIM_accounts_hist where account_key=crs_account;
+			select count(1) into count_row from chirkova.DIM_cards_hist where 
 				card_dir_key=crs_card and end_dt is null;
 			if count_row>0 then 
-				insert into chirkova.DIM_cards values(nextval('chirkova.dim_cards_seq'),crs_card, crs_account);
-				update chirkova.DIM_cards set end_dt=(select start_dt from chirkova.DIM_cards
+				insert into chirkova.DIM_cards_hist values(nextval('chirkova.dim_cards_seq'),crs_card, crs_account);
+				update chirkova.DIM_cards_hist set end_dt=(select start_dt from chirkova.DIM_cards_hist
 					where card_dir_key=crs_card and account_key=crs_account) 
 					where  card_dir_key=crs_card and account_key!=crs_account and end_dt is null;
+				update chirkova.DIM_cards set account_num=cur_account
+					where  cur_card=card_num and account_num!=cur_account;
 				quantity_up=quantity_up+1;
 			else
-				insert into chirkova.DIM_cards values(nextval('chirkova.dim_cards_seq'),crs_card,crs_account);
+				insert into chirkova.DIM_cards_hist values(nextval('chirkova.dim_cards_seq'),crs_card,crs_account);
+				insert into chirkova.DIM_cards values(cur_card_c,cur_account);
 				quantity_in=quantity_in+1;
 			end if;
 		END LOOP;
@@ -307,7 +329,7 @@ begin
 
 
 
-/*Вставка данных в таблицу фактов, где содержится информация о транзакциях, при выгрузке данных из файла была проблема с формированием даты, вместо даты был месяц и наоборот,
+/*Вставка данных в таблицы фактов, где содержится информация о транзакциях в формате SCD2 и SCD1, при выгрузке данных из файла была проблема с формированием даты, вместо даты был месяц и наоборот,
  соответственно для решения данной проблемы формат даты был изменен, далее для того,чтобы субд верно считывала данные, дата преобразована в строку,а далее снова в timestamp
  Вставка актуального ключа номера и терминала вместо номеров карт и терминалов соотвественно
  */
@@ -318,9 +340,9 @@ begin
 			select card_num, terminal into tr_cr_num,tr_ter
 									from STG_data	
 									where trans_id=crs_trans_id;
-			 execute 'select card_key from chirkova.dim_cards inner join chirkova.dim_cards_directory using(card_dir_key) 
+			 execute 'select card_key from chirkova.dim_cards_hist inner join chirkova.dim_cards_directory using(card_dir_key) 
 									where end_dt is null and card_num='''||tr_cr_num||'''' into cur_card;
-			 execute 'select terminal_key from chirkova.dim_terminals
+			 execute 'select terminal_key from chirkova.dim_terminals_hist
 									where end_dt is null and terminal_id='''||tr_ter||'''' into cur_ter;
 									
 			 execute 'insert into chirkova.FACT_TRANSACTIONS
@@ -328,7 +350,14 @@ begin
 										   amt, oper_result,'|| cur_ter||' terminal_key
 									from STG_data	
 									where trans_id='||crs_trans_id|| '
-									group by trans_id, trans_date, card_key, oper_type, amt, oper_result, terminal_key);';			
+									group by trans_id, trans_date, card_key, oper_type, amt, oper_result, terminal_key);';	
+								
+			 execute 'insert into chirkova.FACT_TRANSACTIONS_FOR_SCD1
+									(select trans_id, to_timestamp(to_char(trans_date,''YYYY-DD-MM HH24:MI:SS''),''YYYY-MM-DD HH24:MI:SS'') trans_date,card_num, oper_type,
+										   amt, oper_result,terminal
+									from STG_data	
+									where trans_id='||crs_trans_id|| '
+									group by trans_id, trans_date, card_num, oper_type, amt, oper_result, terminal);';
 		end loop;
 	close crs_trans;
 
@@ -353,7 +382,7 @@ begin
 				select max(statime) from pg_catalog.pg_stat_operations where objname=crs_name);
 			select count(1) into c_r from chirkova.META_table where table_name=crs_name;
 			if c_r>0  then
-				update chirkova.META_table set part_distribution=part_dis,last_vacuum=l_v,num_collumn=collumn,size_t=size_f,count_rows=count_row_m,date_last_operation=date_oper,operation=oper,type_operation=t_oper
+				update chirkova.META_table set part_distribution=part_dis,last_vacuum=l_v,size_t=size_f,count_rows=count_row_m,date_last_operation=date_oper,operation=oper,type_operation=t_oper
 				where table_name=crs_name;
 			else
 				insert into chirkova.META_table values (id,scheman,r_n,u_n,part_dis,l_v,size_f,count_row_m,oper,t_oper,date_oper);
